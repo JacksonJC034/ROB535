@@ -18,17 +18,32 @@ def ACC_Controller(t, x, param):
     #############################################################################
 
     # set the parameters
-    # lam = ...
-    # alpha = ...
-    # w = ...
+    lam = 10.0 # Tracking constraint
+    alpha = 0.1 # Safety constraint
+    w = 1000000.0 # Slack
 
     # construct the cost function
-    # P = ...
+    P[0, 0] = 1
+    P[1, 1] = w
     # q = ...
     
     # construct the constraints
-    # A = ...
-    # b = ...
+    A[0, 0] = (x[1] - vd) / m
+    A[0, 1] = -1
+    b[0] = -lam * ((x[1] - vd)** 2) / 2
+    
+    A[1, 0] = (1 / m) * (1.8 + (x[1] - v0) / (Cdg))
+    B = x[0] - (1 / 2) * (v0 - x[1])** 2 / Cdg - 1.8 * x[1]
+    b[1] = alpha * B + (v0 - x[1])
+    
+    A[2, 0] = -1 / m
+    b[2] = Cdg
+    
+    A[3, 0] = 1 / m
+    b[3] = Cag
+    
+    A[4, 1] = -1
+    b[4] = 0
 
     #############################################################################
     #                            END OF YOUR CODE                               #
