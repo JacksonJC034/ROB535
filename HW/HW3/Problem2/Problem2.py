@@ -70,7 +70,20 @@ class TutorialNet(nn.Module):
   def __init__(self):
     super().__init__()
     # This is where we define layers
-    self.net = None
+    self.net = nn.Sequential(
+      nn.Conv2d(3, 6, 5),          # Conv layer: in_channels=3, out_channels=6, kernel_size=5
+      nn.ReLU(),                   # Activation function
+      nn.MaxPool2d(2, 2),          # Max pooling: kernel_size=2, stride=2
+      nn.Conv2d(6, 16, 5),         # Conv layer: in_channels=6, out_channels=16, kernel_size=5
+      nn.ReLU(),                   # Activation function
+      nn.MaxPool2d(2, 2),          # Max pooling
+      nn.Flatten(),                # Flatten the tensor for the fully connected layers
+      nn.Linear(16 * 5 * 5, 120),  # Fully connected layer
+      nn.ReLU(),                   # Activation function
+      nn.Linear(120, 84),          # Fully connected layer
+      nn.ReLU(),                   # Activation function
+      nn.Linear(84, 3)             # Output layer: output size adjusted to 3 classes
+    )
 
   def forward(self, x):
     # This is where we pass the input through our network
@@ -82,7 +95,39 @@ class TutorialNet(nn.Module):
 class YourNet(nn.Module):
   def __init__(self):
     super().__init__()
-    self.net = None
+    self.net = nn.Sequential(
+      # First convolutional block
+      nn.Conv2d(3, 32, kernel_size=3, padding=1),  # Input channels: 3, output channels: 32
+      nn.BatchNorm2d(32),
+      nn.ReLU(),
+      nn.MaxPool2d(2, 2),  # Output: 32 x 16 x 16
+
+      # Second convolutional block
+      nn.Conv2d(32, 64, kernel_size=3, padding=1),  # Output channels: 64
+      nn.BatchNorm2d(64),
+      nn.ReLU(),
+      nn.MaxPool2d(2, 2),  # Output: 64 x 8 x 8
+
+      # Third convolutional block
+      nn.Conv2d(64, 128, kernel_size=3, padding=1),  # Output channels: 128
+      nn.BatchNorm2d(128),
+      nn.ReLU(),
+      nn.MaxPool2d(2, 2),  # Output: 128 x 4 x 4
+
+      # Flatten layer
+      nn.Flatten(),
+
+      # Fully connected layers
+      nn.Linear(128 * 4 * 4, 256),  # Adjust input size based on previous layer's output
+      nn.ReLU(),
+      nn.Dropout(0.5),
+
+      nn.Linear(256, 128),
+      nn.ReLU(),
+      nn.Dropout(0.5),
+
+      nn.Linear(128, 3)  # Output layer: 3 classes
+      )
 
   def forward(self, x):
     x = self.net(x)

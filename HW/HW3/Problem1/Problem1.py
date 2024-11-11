@@ -17,12 +17,14 @@ from sklearn.cluster import KMeans
 def register_clouds(xyz_source, xyz_target, trans_init=None):
   if trans_init is None:
     trans_init = np.eye(4)
-  threshold = None
-  max_iters = None
+  threshold = 0.1
+  max_iters = 300
 
   # TODO: create o3d pointclouds for the source and target
-  source = None
-  target = None
+  source = o3d.geometry.PointCloud()
+  source.points = o3d.utility.Vector3dVector(xyz_source)
+  target = o3d.geometry.PointCloud()
+  target.points = o3d.utility.Vector3dVector(xyz_target)
 
   # Pre-registration similarity
   evaluation_pre = o3d.pipelines.registration.evaluate_registration(
@@ -30,14 +32,17 @@ def register_clouds(xyz_source, xyz_target, trans_init=None):
   print("Before registration:", evaluation_pre)
 
   # TODO: register the point clouds using registration_icp
-  reg_p2p = None
+  reg_p2p = o3d.pipelines.registration.registration_icp(
+    source, target, threshold, trans_init,
+    o3d.pipelines.registration.TransformationEstimationPointToPoint(),
+    o3d.pipelines.registration.ICPConvergenceCriteria(max_iteration=max_iters))
 
   evaluation_post = o3d.pipelines.registration.evaluate_registration(
     source, target, threshold, reg_p2p.transformation)
   print("After registration:", evaluation_post)
 
   # TODO: obtain the transformation matrix from reg_p2p
-  reg_mat = None
+  reg_mat = reg_p2p.transformation
   return reg_mat
 
 
@@ -46,11 +51,13 @@ def register_clouds(xyz_source, xyz_target, trans_init=None):
 # Return combined points (N+M)x3 and labels (N+M)
 def combine_clouds(xyz_source, xyz_target, labels_source, labels_target, reg_mat):
   # TODO: Apply transformation matrix on xyz_source
-  xyz_transformed = None
+  xyz_source_hom = np.hstack((xyz_source, np.ones((xyz_source.shape[0], 1))))
+  xyz_transformed_hom = (reg_mat @ xyz_source_hom.T).T
+  xyz_transformed = xyz_transformed_hom[:, :3]
   # TODO: Concatenate xyz and labels
   # Note: Concatenate transformed followed by target
-  xyz_all = None
-  label_all = None
+  xyz_all = np.vstack((xyz_transformed, xyz_target))
+  label_all = np.hstack((labels_source, labels_target))
   return xyz_all, label_all
 
 
@@ -59,14 +66,16 @@ def combine_clouds(xyz_source, xyz_target, labels_source, labels_target, reg_mat
 # Note that labels are mapped to training set, meaning in range 0 to 20
 def mask_dynamic(xyz, label):
   # TODO: Create a mask such that label == vehicle or label == bus
-  dynamic_mask = None
+  dynamic_labels = [1, 5]
+  dynamic_mask = np.isin(label, dynamic_labels)
   return xyz[dynamic_mask, :], label[dynamic_mask]
 
 
 # Similarly, mask out the vehicle and bus class to return only the static points
 def mask_static(xyz, label):
   # TODO: Create a mask opposite of above
-  static_mask = None
+  dynamic_labels = [1, 5]
+  static_mask = ~np.isin(label, dynamic_labels)
   return xyz[static_mask, :], label[static_mask]
 
 
@@ -77,9 +86,11 @@ def cluster_dists(xyz, clusters):
   N, __ = xyz.shape
   xyz = xyz.reshape(N, 1, 3)
   C = clusters.shape[0]
+  clusters = clusters.reshape(1, C, 3)
   # TODO: Create assignments between each point and the closest cluster
-  # 
-  closest_clusts = None
+  diffs = xyz - clusters  # Shape: (N, C, 3)
+  sq_dists = np.sum(diffs ** 2, axis=2)  # Shape: (N, C)
+  closest_clusts = np.argmin(sq_dists, axis=1)  # Shape: (N,)
   return closest_clusts
 
 
@@ -89,6 +100,15 @@ def cluster_dists(xyz, clusters):
 def new_centroids(xyz, assignments, C):
   new_instances = np.zeros((C, 3))
   # TODO: Calculate new clusters by the assignments
+  for c in range(C):
+        # Get all points assigned to cluster c
+        assigned_points = xyz[assignments == c]
+        if assigned_points.shape[0] > 0:
+            # Compute the mean of these points
+            new_instances[c] = np.mean(assigned_points, axis=0)
+        else:
+            # Handle empty clusters if necessary (e.g., reinitialize)
+            new_instances[c] = xyz[np.random.randint(0, xyz.shape[0])]
   return new_instances
 
 
@@ -96,7 +116,7 @@ def new_centroids(xyz, assignments, C):
 # Shown in the point cloud
 def num_instances():
   # TODO: Return the number of instances
-  return None
+  return 5
 
 
 # K means algorithm. Given points, calculates and returns clusters.
@@ -125,18 +145,19 @@ def cluster_sci(xyz):
 # Given Nx3 point cloud, 3x3 camera intrinsic matrix, and 4x4 LiDAR to Camera 
 # Compute image points Nx2 and depth in camera-frame per point
 def to_pixels(xyz, P, RT):
+  N = xyz.shape[0]
   # Convert to camera frame
-  transformed_points = None
+  xyz_homogeneous = np.hstack((xyz, np.ones((N, 1))))  # Shape: (N, 4)
+  transformed_points_homogeneous = (RT @ xyz_homogeneous.T).T  # Shape: (N, 4)
+  transformed_points = transformed_points_homogeneous[:, :3]   # Shape: (N, 3)
 
   # Depth in camera frame
-  d = None
+  d = transformed_points[:, 2]  # Shape: (N,)
 
   # Use intrinsic matrix
-  image_points = None
-
-  # Normalize 
-  image_x = None
-  image_y = None
+  image_points_homogeneous = (P @ transformed_points.T).T  # Shape: (N, 3)
+  image_x = image_points_homogeneous[:, 0] / image_points_homogeneous[:, 2]
+  image_y = image_points_homogeneous[:, 1] / image_points_homogeneous[:, 2]
 
   imgpoints = np.stack([image_x, image_y], axis=1)
   return imgpoints, d
