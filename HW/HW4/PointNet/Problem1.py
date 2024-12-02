@@ -31,17 +31,18 @@ class PointLoader(Dataset):
     # Load point cloud
     velo_file = os.path.join(self.velo_dir, self.velo_files[index])
     # TODO: Fetch the point cloud
-    pc = None
+    pc = np.fromfile(velo_file, dtype=np.float32).reshape(-1, 4)[:, :3]
     # Test set has no available ground truth
     if self.split == "Test":
       return pc, None
     # Load labels
     label_file = os.path.join(self.label_dir, self.label_files[index])
     # TODO: Fetch labels from label_file
-    label = None
+    label = np.fromfile(label_file, dtype=np.uint32).reshape(-1)
     # TODO: Mask the label with a mask of 0xFFFF
     # TODO: Use the masked label to index the remap array
-    label = None
+    label = label & 0xFFFF
+    label = self.remap_array[label]
     # Downsample the points
     if self.split == "Train":
       indices = np.random.permutation(pc.shape[0])[:self.max_size]
@@ -69,11 +70,11 @@ class PointNetEncoder(nn.Module):
     self.net = torch.nn.Sequential()
     for i in range(1, len(cs)):
       # TODO: Replace None with a linear layer from cs[i-1] to cs[i]
-      self.net.add_module("Lin" + str(i), None)
+      self.net.add_module("Lin" + str(i), nn.Linear(cs[i - 1], cs[i]))
       # TODO: Replace None with a batchnorm layer of size cs[i]
-      self.net.add_module("Bn" + str(i), None)
+      self.net.add_module("Bn" + str(i), nn.BatchNorm1d(cs[i]))
        #TODO: Replace None with a ReLU Layer
-      self.net.add_module("ReLU" + str(i), None)
+      self.net.add_module("ReLU" + str(i), nn.ReLU())
     if linear_out is not None:
       # TODO: Replace None with a linear layer from cs[i] to linear_out
       self.net.add_module("LinFinal", nn.Linear(cs[i], linear_out))
@@ -82,11 +83,11 @@ class PointNetEncoder(nn.Module):
     # Input x is a BxNxC matrix where N is number of points
     B, N, C = x.shape
     # TODO: Use x.view() to reshape x into (B*N, C)
-    x = None
+    x = x.view(B * N, C)
     # TODO: Feed x through your network
-    x = None
+    x = self.net(x)
     # TODO: Reshape x into shape (B, N, C1) where C1 is the new channel dim
-    x = None
+    x = x.view(B, N, -1)
     return x
     
 # This module learns to combines global and local point features
@@ -94,29 +95,29 @@ class PointNetModule(nn.Module):
   def __init__(self, cs_en, cs_dec, num_classes=20):
     super().__init__()
     # TODO: Create a PointNetEncoder with cs=cs_en
-    self.enc = None
+    self.enc = PointNetEncoder(cs_en)
     # TODO: Create a PointNetEncoder decoder module with cs=cs_dec
     # and linear_out=num_classes
-    self.dec = None
+    self.dec = PointNetEncoder(cs_dec, linear_out=num_classes)
 
   def forward(self, x):
     B, N, C = x.shape
     # Encoder
     # TODO: Feed x through the PointNetEncoder
-    point_feats = None
+    point_feats = self.enc(x)
     # Max across points
     # TODO: Use max pooling across the point dimension to create
     # a global_feats tensor of shape (B, C1)
     # We used the torch.max
-    global_feats = None
+    global_feats, _ = torch.max(point_feats, dim=1)  # Shape: (B, C1)
     # TODO: Reshape global_feats from (B, C1) to (B, 1, C1)
     # And repeat along the middle dimension N times using repeat
     # End tensor should be (B, N, C1)
-    global_feats = None
+    global_feats = global_feats.unsqueeze(1).repeat(1, N, 1)
     # TODO: Concatenate local and global features along channel dimension (2)
-    joint_feats = None
+    joint_feats = torch.cat([point_feats, global_feats], dim=2)
     # TODO: Feed joint_feats through the decoder module
-    out = None
+    out = self.dec(joint_feats)
     return out
     
 # This module adds a T-Net
@@ -124,60 +125,77 @@ class PointNetFull(nn.Module):
   def __init__(self, cs_en, cs_dec, cs_t_en, cs_t_dec):
     super().__init__()
     # TODO: Create a PointNetEncoder with cs=cs_t_en
-    self.t_enc = None
+    self.t_enc = PointNetEncoder(cs_t_en)
     # TODO: Create a PointNetEncoder with cs=cs_t_dec and linear_out = 9
     # Note that 9 comes from the product 3x3
-    self.t_dec = None
+    self.t_dec = PointNetEncoder(cs_t_dec, linear_out=9)
     # TODO: Create a PointNetModule with cs_en, and cs_dec
-    self.joint_enc = None
+    self.joint_enc = PointNetModule(cs_en, cs_dec)
 
   def forward(self, x):
     B, N, C = x.shape
     # T-Net
     # TODO: Feed x through the t-net encoder
-    t_feats = None
+    t_feats = self.t_enc(x)
     # TODO: Max pool across the point dimension of t_feats
-    t_feats = None
+    t_feats, _ = torch.max(t_feats, dim=1)
     # TODO: Reshape t_feats to shape (B, 1, C1)
-    t_feats = None
+    t_feats = t_feats.unsqueeze(1)
     # TODO: Feed t_feats through the T-Net Decoder
-    t_feats = None
+    t_feats = self.t_dec(t_feats)
     # TODO: Reshape t_feats to (B, 3, 3)
-    point_trans = None
+    point_trans = t_feats.view(B, -1) 
     # TODO: Compute the transformation (B, 3, 3) matrices
     # As a summation of point_trans and an identity matrix
-    point_trans = None
+    point_trans = t_feats.view(B, 3, 3)
+    identity = torch.eye(3, device=x.device).unsqueeze(0).repeat(B, 1, 1)
+    point_trans = point_trans + identity
     # Apply transform
     # TODO: Perform batched matrix multiplication between x and point_trans
     # torch.bmm() may be helpful
-    transformed_points = None
+    transformed_points = torch.bmm(x, point_trans)
     # Joint Encoder
     # TODO: Feed the transformed_points through the joint encoder
-    output_preds = None
+    output_preds = self.joint_enc(transformed_points)
     return output_preds
 
 
 # Compute the per-class iou and miou
 def IoU(targets, predictions, num_classes, ignore_index=0):
-  intersections = torch.zeros(num_classes, device=targets.device)
-  unions = torch.zeros_like(intersections)
-  counts = torch.zeros_like(intersections)
-  # TODO: Discard ignored points
-  valid_mask = None
-  targets = targets[valid_mask]
-  predictions = predictions[valid_mask]
-  # Loop over classes and update the counts, unions, and intersections
-  for c in range(num_classes):
-    # TODO: Fill in computation
-    # Add small value to avoid division by 0
-    # Make sure to keep the small smoothing constant to match the autograder
-    unions[c] = unions[c] + 0.00001
-  # Per-class IoU
-  # Make sure to set iou for classes with no points to 1
-  iou = None
-  # Calculate mean, ignoring ignore index
-  miou = None
-  return iou, miou
+    # Initialize tensors
+    intersections = torch.zeros(num_classes, device=targets.device)
+    unions = torch.zeros_like(intersections)
+    counts = torch.zeros_like(intersections)
+    
+    # Discard ignored points
+    valid_mask = targets != ignore_index
+    targets = targets[valid_mask]
+    predictions = predictions[valid_mask]
+    
+    # Loop over classes
+    for c in range(num_classes):
+        # Count occurrences of class c in targets
+        counts[c] = (targets == c).sum()
+        
+        # Compute intersection and union
+        intersection = ((predictions == c) & (targets == c)).sum()
+        union = ((predictions == c) | (targets == c)).sum()
+        
+        # Store results
+        intersections[c] = intersection
+        unions[c] = union + 1e-5  # Add small value to avoid division by zero
+    
+    # Compute per-class IoU
+    iou = intersections / unions
+    
+    # Set IoU to 1.0 for classes with no instances in targets
+    iou[counts == 0] = 1.0
+    
+    # Exclude ignore_index from mean IoU calculation
+    classes_to_include = torch.arange(num_classes, device=targets.device) != ignore_index
+    miou = iou[classes_to_include].mean()
+    
+    return iou, miou
 
     
 

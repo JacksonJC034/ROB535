@@ -3,6 +3,7 @@ Code written by Joey Wilson, 2023.
 """
 
 import numpy as np
+import random
 from torch.utils.data import Dataset
 from PIL import Image
 import torch
@@ -10,6 +11,8 @@ import os
 import torch.nn as nn
 import torch.nn.functional as F
 import torchvision.transforms as transforms
+import torchvision.transforms.functional as TF
+from torchvision.transforms.functional import InterpolationMode
 
 # Default transforms
 def transform_train():
@@ -46,7 +49,68 @@ class ImageSegmentation(Dataset):
     # And add random flipping
     # Make sure the same augmentation is applied to image and label
     def image_augmentation(self, img_mat, label_mat):
-      return img_mat, label_mat
+        # Convert numpy arrays to PIL Images
+        img = Image.fromarray(img_mat)
+        label = Image.fromarray(label_mat)
+
+        # Random horizontal flip
+        if random.random() > 0.5:
+            img = TF.hflip(img)
+            label = TF.hflip(label)
+
+        # Random vertical flip
+        if random.random() > 0.5:
+            img = TF.vflip(img)
+            label = TF.vflip(label)
+
+        # Random crop
+        desired_height = 320
+        desired_width = 1024
+        i, j, h, w = transforms.RandomCrop.get_params(
+            img, output_size=(desired_height, desired_width))
+        img = TF.crop(img, i, j, h, w)
+        label = TF.crop(label, i, j, h, w)
+
+        # Convert back to numpy arrays
+        img_mat = np.array(img)
+        label_mat = np.array(label)
+        return img_mat, label_mat
+    def image_augmentation(self, img_mat, label_mat):
+        # Convert numpy arrays to PIL Images
+        img = Image.fromarray(img_mat)
+        label = Image.fromarray(label_mat)
+        
+        # Random horizontal flip
+        if random.random() > 0.5:
+            img = TF.hflip(img)
+            label = TF.hflip(label)
+        
+        # Random vertical flip
+        if random.random() > 0.5:
+            img = TF.vflip(img)
+            label = TF.vflip(label)
+        
+        # Random rotation
+        angle = random.uniform(-15, 15)
+        img = TF.rotate(img, angle, interpolation=InterpolationMode.BILINEAR)
+        label = TF.rotate(label, angle, interpolation=InterpolationMode.NEAREST)
+        
+        # Random crop
+        desired_height = 320
+        desired_width = 1024
+        i, j, h, w = transforms.RandomCrop.get_params(
+            img, output_size=(desired_height, desired_width))
+        img = TF.crop(img, i, j, h, w)
+        label = TF.crop(label, i, j, h, w)
+        
+        # Color jitter (apply only to image)
+        color_jitter = transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1)
+        img = color_jitter(img)
+        
+        # Convert back to numpy arrays
+        img_mat = np.array(img)
+        label_mat = np.array(label)
+        return img_mat, label_mat
 
     # Return indexed item in dataset
     def __getitem__(self, index):
@@ -76,18 +140,19 @@ class ImageSegmentation(Dataset):
 class ConvBlockStudent(nn.Module):
     def __init__(self, c_in, c_out, ds=False):
         super().__init__()
+        layers = []
         if ds:
-          self.net = nn.Sequential(
-              nn.Conv2d(c_in, c_out, 2, stride=2, padding=0),
-              nn.ReLU(),
-              nn.BatchNorm2d(c_out),
-          )
+            layers.append(nn.Conv2d(c_in, c_out, 2, stride=2, padding=0))
         else:
-          self.net = nn.Sequential(
-              nn.Conv2d(c_in, c_out, 3, stride=1, padding=1),
-              nn.ReLU(),
-              nn.BatchNorm2d(c_out),
-          )
+            layers.append(nn.Conv2d(c_in, c_out, 3, stride=1, padding=1))
+        layers.extend([
+            nn.ReLU(),
+            nn.BatchNorm2d(c_out),
+            nn.Conv2d(c_out, c_out, 3, stride=1, padding=1),
+            nn.ReLU(),
+            nn.BatchNorm2d(c_out),
+        ])
+        self.net = nn.Sequential(*layers)
 
     def forward(self, x):
         return self.net(x)
@@ -104,39 +169,76 @@ class ConvBlockStudent(nn.Module):
 class UNetStudent(nn.Module):
     def __init__(self, num_classes):
         super().__init__()
-        self.pre = ConvBlockStudent(3, 16)
+        self.pre = ConvBlockStudent(3, 64)
 
-        self.down1 = ConvBlockStudent(16, 32, ds=True)
+        self.down1 = ConvBlockStudent(64, 128, ds=True)
 
-        self.down2 = ConvBlockStudent(32, 64, ds=True)
+        self.down2 = ConvBlockStudent(128, 256, ds=True)
+        
+        self.down3 = ConvBlockStudent(256, 512, ds=True)
 
-        self.up1 = ConvBlockStudent(64+32, 32)
+        self.up2 = ConvBlockStudent(512+256, 256)
+        
+        self.up1 = ConvBlockStudent(256+128, 128)
 
-        self.up0 = ConvBlockStudent(32+16, 32)
+        self.up0 = ConvBlockStudent(128+64, 64)
 
-        self.out = nn.Conv2d(32, num_classes, kernel_size=3, stride=1, padding=1)
+        self.out = nn.Conv2d(64, num_classes, kernel_size=3, stride=1, padding=1)
 
     def forward(self, x):
         # Encoder
         x0 = self.pre(x)
         x1 = self.down1(x0)
         x2 = self.down2(x1)
-
-        # Going up 1st layer
-        B, __, H, W = x1.shape
-        x2 = F.interpolate(x2, (H, W))
-        x2 = torch.cat([x1, x2], dim=1)
-        x1 = self.up1(x2)
-
-        # Going up 0th layer
-        B, __, H, W = x0.shape
-        x1 = F.interpolate(x1, (H, W))
-        x1 = torch.cat([x0, x1], dim=1)
-        x = self.up0(x1)
+        x3 = self.down3(x2)
+        
+        # Decoder
+        x = F.interpolate(x3, size=x2.shape[2:], mode='bilinear', align_corners=True)
+        x = torch.cat([x2, x], dim=1)
+        x = self.up2(x)
+        
+        x = F.interpolate(x, size=x1.shape[2:], mode='bilinear', align_corners=True)
+        x = torch.cat([x1, x], dim=1)
+        x = self.up1(x)
+        
+        x = F.interpolate(x, size=x0.shape[2:], mode='bilinear', align_corners=True)
+        x = torch.cat([x0, x], dim=1)
+        x = self.up0(x)
         return self.out(x)
 
 
 def IoU(targets, predictions, num_classes, ignore_index=0):
-  iou = None
-  miou = None
-  return iou, miou
+    # Initialize tensors
+    intersections = torch.zeros(num_classes, device=targets.device)
+    unions = torch.zeros_like(intersections)
+    counts = torch.zeros_like(intersections)
+    
+    # Discard ignored points
+    valid_mask = targets != ignore_index
+    targets = targets[valid_mask]
+    predictions = predictions[valid_mask]
+    
+    # Loop over classes
+    for c in range(num_classes):
+        # Count occurrences of class c in targets
+        counts[c] = (targets == c).sum()
+        
+        # Compute intersection and union
+        intersection = ((predictions == c) & (targets == c)).sum()
+        union = ((predictions == c) | (targets == c)).sum()
+        
+        # Store results
+        intersections[c] = intersection
+        unions[c] = union + 1e-5  # Add small value to avoid division by zero
+    
+    # Compute per-class IoU
+    iou = intersections / unions
+    
+    # Set IoU to 1.0 for classes with no instances in targets
+    iou[counts == 0] = 1.0
+    
+    # Exclude ignore_index from mean IoU calculation
+    classes_to_include = torch.arange(num_classes, device=targets.device) != ignore_index
+    miou = iou[classes_to_include].mean()
+    
+    return iou, miou
